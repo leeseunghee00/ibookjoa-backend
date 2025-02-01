@@ -116,7 +116,7 @@
 <br />
 
 #### 3. 성향 삭제 시 delete 쿼리가 하나씩 날아가는 문제
-- 문제 원인: MySQL IDENTITY 전략으로 인해 `deleteAll()` 을 실행했지만 실제 delete 쿼리가 하나씩 날아감.
+- 문제 원인: `deleteAll()` 을 실행했지만 실제 delete 쿼리가 하나씩 날아감.
 - 해결: `deleteAllBatch()` 를 사용해 한 번의 delete 쿼리로 데이터를 삭제할 수 있도록 변경 → 부하를 줄임.
 
 <br />
