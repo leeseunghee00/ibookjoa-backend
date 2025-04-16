@@ -10,8 +10,10 @@ import java.util.stream.Collectors;
 
 import javax.sql.DataSource;
 
+import org.springframework.batch.core.ChunkListener;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepExecutionListener;
 import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
 import org.springframework.batch.core.configuration.annotation.JobScope;
 import org.springframework.batch.core.configuration.annotation.StepScope;
@@ -50,10 +52,11 @@ import lombok.extern.slf4j.Slf4j;
 public class RecommendationBatchConfig {
 
 	private final DataSource dataSource;
-	private final PlatformTransactionManager platformTransactionManager;
+	private final PlatformTransactionManager transactionManager;
 	private final NamedParameterJdbcTemplate namedParameterJdbcTemplate;
 	private final BookTraitsRepository bookTraitsRepository;
 	private final ChildRepository childRepository;
+	private final RecBookBatchTimingListener recBookBatchTimingListener;
 
 	/**
 	 * Job
@@ -76,10 +79,12 @@ public class RecommendationBatchConfig {
 	public Step recommendBookStep(JobRepository jobRepository) {
 
 		return new StepBuilder("recommendBookStep", jobRepository)
-			.<ChildHistoryDto, List<RecBook>>chunk(100, platformTransactionManager)
+			.<ChildHistoryDto, List<RecBook>>chunk(100, transactionManager)
 			.reader(recommendBookItemReader())
 			.processor(recommendBookItemProcessor())
 			.writer(recommendBookWriter())
+			.listener((StepExecutionListener)recBookBatchTimingListener)
+			.listener((ChunkListener)recBookBatchTimingListener)
 			.build();
 	}
 
@@ -96,22 +101,22 @@ public class RecommendationBatchConfig {
 				SELECT c.child_id, mh.history_id AS mbti_history_id,
 					   ct1.trait_score AS trait1, ct2.trait_score AS trait2,
 					   ct3.trait_score AS trait3, ct4.trait_score AS trait4
-        	""")
+				""")
 			.fromClause("""
-				FROM child c
-				JOIN mbti_history mh ON c.child_id = mh.child_id
-				LEFT JOIN child_traits ct1 ON mh.history_id = ct1.history_id AND ct1.trait_id = 1
-				LEFT JOIN child_traits ct2 ON mh.history_id = ct2.history_id AND ct2.trait_id = 2
-				LEFT JOIN child_traits ct3 ON mh.history_id = ct3.history_id AND ct3.trait_id = 3
-				LEFT JOIN child_traits ct4 ON mh.history_id = ct4.history_id AND ct4.trait_id = 4
-			""")
+					FROM child c
+					JOIN mbti_history mh ON c.child_id = mh.child_id
+					LEFT JOIN child_traits ct1 ON mh.history_id = ct1.history_id AND ct1.trait_id = 1
+					LEFT JOIN child_traits ct2 ON mh.history_id = ct2.history_id AND ct2.trait_id = 2
+					LEFT JOIN child_traits ct3 ON mh.history_id = ct3.history_id AND ct3.trait_id = 3
+					LEFT JOIN child_traits ct4 ON mh.history_id = ct4.history_id AND ct4.trait_id = 4
+				""")
 			.whereClause("mh.created_at = (SELECT MAX(created_at) FROM mbti_history WHERE child_id = c.child_id)")
 			.sortKeys(Collections.singletonMap("c.child_id", Order.ASCENDING))
 			.pageSize(100)
 			.rowMapper((rs, rowNum) -> new ChildHistoryDto(
 				rs.getLong("child_id"),
 				rs.getLong("mbti_history_id"),
-				new int[]{
+				new int[] {
 					rs.getInt("trait1"),
 					rs.getInt("trait2"),
 					rs.getInt("trait3"),
@@ -136,15 +141,12 @@ public class RecommendationBatchConfig {
 				int maxScore = Math.min(100, childTraitScore[i] + 5);
 				List<Book> books = bookTraitsRepository.findBooksByTraitScoreBetween(minScore, maxScore, PageRequest.of(0, 10));
 				recBooks.addAll(books);
-
-				if (recBooks.size() >= 20) {
-					break;
-				}
 			}
 
 			Optional<Child> child = childRepository.findById(childData.getChildId());
 
 			return recBooks.stream()
+				.limit(20)
 				.map(book -> RecBook.builder()
 					.child(child.get())
 					.book(book)
